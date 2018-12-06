@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package protosanitizer
+package protosanitizer_test
 
 import (
 	"fmt"
@@ -22,6 +22,7 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/protobuf/proto"
+	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
 	csi03 "github.com/kubernetes-csi/csi-lib-utils/protosanitizer/test/csi03"
 	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer/test/csitest"
 	"github.com/stretchr/testify/assert"
@@ -205,9 +206,9 @@ func TestStripSecrets(t *testing.T) {
 		before := fmt.Sprint(c.original)
 		var stripped fmt.Stringer
 		if _, ok := c.original.(*csi03.CreateVolumeRequest); ok {
-			stripped = StripSecretsCSI03(c.original)
+			stripped = protosanitizer.StripSecretsCSI03(c.original)
 		} else {
-			stripped = StripSecrets(c.original)
+			stripped = protosanitizer.StripSecrets(c.original)
 		}
 		if assert.Equal(t, c.stripped, fmt.Sprintf("%s", stripped), "unexpected result for fmt s of %s", c.original) {
 			assert.Equal(t, c.stripped, fmt.Sprintf("%v", stripped), "unexpected result for fmt v of %s", c.original)
@@ -216,7 +217,7 @@ func TestStripSecrets(t *testing.T) {
 	}
 
 	// The secret is hidden because StripSecrets is a struct referencing it.
-	dump := fmt.Sprintf("%#v", StripSecrets(createVolume))
+	dump := fmt.Sprintf("%#v", protosanitizer.StripSecrets(createVolume))
 	assert.NotContains(t, dump, secretName)
 	assert.NotContains(t, dump, secretValue)
 }
