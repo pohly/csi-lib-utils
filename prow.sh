@@ -521,6 +521,15 @@ install_hostpath () {
         return 1
     fi
 
+    if ${CSI_PROW_BUILD_JOB}; then
+        # Ignore: Double quote to prevent globbing and word splitting.
+        # Ignore: To read lines rather than words, pipe/redirect to a 'while read' loop.
+        # shellcheck disable=SC2086 disable=SC2013
+        for i in $(grep '^\s*CMDS\s*=' Makefile | sed -e 's/\s*CMDS\s*=//'); do
+            kind load docker-image --name csi-prow $i:csiprow || die "could not load the $i:latest image into the kind cluster"
+        done
+    fi
+
     if deploy_hostpath="$(find_deployment "$(pwd)/deploy")"; then
         :
     elif [ "${CSI_PROW_HOSTPATH_REPO}" = "none" ]; then
@@ -846,102 +855,99 @@ main () {
         run_with_go "${CSI_PROW_GO_VERSION_BUILD}" make container || die "'make container' failed"
     fi
 
-    install_kind || die "installing kind failed"
-    start_cluster || die "starting the cluster failed"
+    if test_enabled "sanity" || test_enabled "parallel" || test_enabled "serial" || test_enabled "serial-alpha" || test_enabled "parallel-alpha"; then
+        install_kind || die "installing kind failed"
 
-    if ${CSI_PROW_BUILD_JOB}; then
-        cmds="$(grep '^\s*CMDS\s*=' Makefile | sed -e 's/\s*CMDS\s*=//')"
-        # Get the image that was just built (if any) from the
-        # top-level Makefile CMDS variable and set the
-        # deploy-hostpath.sh env variables for it. We also need to
-        # side-load those images into the cluster.
-        for i in $cmds; do
-            e=$(echo "$i" | tr '[:lower:]' '[:upper:]' | tr - _)
-            images="$images ${e}_REGISTRY=none ${e}_TAG=csiprow"
-
-            # We must avoid the tag "latest" because that implies
-            # always pulling the image
-            # (https://github.com/kubernetes-sigs/kind/issues/328).
-            docker tag "$i:latest" "$i:csiprow" || die "tagging the locally built container image for $i failed"
-            kind load docker-image --name csi-prow "$i:csiprow" || die "could not load the $i:latest image into the kind cluster"
-        done
-
-        if [ -e deploy/kubernetes/rbac.yaml ]; then
-            # This is one of those components which has its own RBAC rules (like external-provisioner).
-            # We are testing a locally built image and also want to test with the the current,
-            # potentially modified RBAC rules.
-            if [ "$(echo "$cmds" | wc -w)" != 1 ]; then
-                die "ambiguous deploy/kubernetes/rbac.yaml: need exactly one command, got: $cmds"
-            fi
-            e=$(echo "$cmds" | tr '[:lower:]' '[:upper:]' | tr - _)
-            images="$images ${e}_RBAC=$(pwd)/deploy/kubernetes/rbac.yaml"
-        fi
-    fi
-
-    # Installing the driver might be disabled, in which case we bail out early.
-    if ! install_hostpath "$images"; then
-        info "hostpath driver installation disabled, skipping E2E testing"
-        return "$ret"
-    fi
-
-    collect_cluster_info
-
-    if test_enabled "sanity"; then
-        if ! run_sanity; then
-            ret=1
-        fi
-    fi
-
-    if test_enabled "parallel"; then
-        # Ignore: Double quote to prevent globbing and word splitting.
-        # shellcheck disable=SC2086
-        if ! run_e2e parallel ${CSI_PROW_GINKO_PARALLEL} \
-             -focus="External.Storage" \
-             -skip="$(regex_join "${CSI_PROW_E2E_SERIAL}" "${CSI_PROW_E2E_ALPHA}" "${CSI_PROW_E2E_SKIP}")"; then
-            warn "E2E parallel failed"
-            ret=1
-        fi
-    fi
-
-    if test_enabled "serial"; then
-        if ! run_e2e serial \
-             -focus="External.Storage.*($(regex_join "${CSI_PROW_E2E_SERIAL}"))" \
-             -skip="$(regex_join "${CSI_PROW_E2E_ALPHA}" "${CSI_PROW_E2E_SKIP}")"; then
-            warn "E2E serial failed"
-            ret=1
-        fi
-    fi
-
-    if (test_enabled "parallel-alpha" || test_enabled "serial-alpha") && [ "${CSI_PROW_E2E_ALPHA_GATES}" ]; then
-        # Need to (re)create the cluster.
-        start_cluster "${CSI_PROW_E2E_ALPHA_GATES}" || die "starting alpha cluster failed"
         if ${CSI_PROW_BUILD_JOB}; then
-            # Ignore: Double quote to prevent globbing and word splitting.
-            # Ignore: To read lines rather than words, pipe/redirect to a 'while read' loop.
-            # shellcheck disable=SC2086 disable=SC2013
-            for i in $(grep '^\s*CMDS\s*=' Makefile | sed -e 's/\s*CMDS\s*=//'); do
-                kind load docker-image --name csi-prow $i:csiprow || die "could not load the $i:latest image into the kind cluster"
-            done
-        fi
-        install_hostpath "$images" || die "hostpath driver installation failed unexpectedly on alpha cluster"
+            cmds="$(grep '^\s*CMDS\s*=' Makefile | sed -e 's/\s*CMDS\s*=//')"
+            # Get the image that was just built (if any) from the
+            # top-level Makefile CMDS variable and set the
+            # deploy-hostpath.sh env variables for it. We also need to
+            # side-load those images into the cluster.
+            for i in $cmds; do
+                e=$(echo "$i" | tr '[:lower:]' '[:upper:]' | tr - _)
+                images="$images ${e}_REGISTRY=none ${e}_TAG=csiprow"
 
-        if test_enabled "parallel-alpha"; then
-            # Ignore: Double quote to prevent globbing and word splitting.
-            # shellcheck disable=SC2086
-            if ! run_e2e parallel-alpha ${CSI_PROW_GINKO_PARALLEL} \
-                 -focus="External.Storage.*($(regex_join "${CSI_PROW_E2E_ALPHA}"))" \
-                 -skip="$(regex_join "${CSI_PROW_E2E_SERIAL}" "${CSI_PROW_E2E_SKIP}")"; then
-                warn "E2E parallel alpha failed"
-                ret=1
+                # We must avoid the tag "latest" because that implies
+                # always pulling the image
+                # (https://github.com/kubernetes-sigs/kind/issues/328).
+                docker tag "$i:latest" "$i:csiprow" || die "tagging the locally built container image for $i failed"
+            done
+
+            if [ -e deploy/kubernetes/rbac.yaml ]; then
+                # This is one of those components which has its own RBAC rules (like external-provisioner).
+                # We are testing a locally built image and also want to test with the the current,
+                # potentially modified RBAC rules.
+                if [ "$(echo "$cmds" | wc -w)" != 1 ]; then
+                    die "ambiguous deploy/kubernetes/rbac.yaml: need exactly one command, got: $cmds"
+                fi
+                e=$(echo "$cmds" | tr '[:lower:]' '[:upper:]' | tr - _)
+                images="$images ${e}_RBAC=$(pwd)/deploy/kubernetes/rbac.yaml"
             fi
         fi
 
-        if test_enabled "serial-alpha"; then
-            if ! run_e2e serial-alpha \
-                 -focus="External.Storage.*(($(regex_join "${CSI_PROW_E2E_SERIAL}")).*($(regex_join "${CSI_PROW_E2E_ALPHA}"))|($(regex_join "${CSI_PROW_E2E_ALPHA}")).*($(regex_join "${CSI_PROW_E2E_SERIAL}")))" \
-                 -skip="$(regex_join "${CSI_PROW_E2E_SKIP}")"; then
-                warn "E2E serial alpha failed"
-                ret=1
+        if test_enabled "sanity" || test_enabled "parallel" || test_enabled "serial"; then
+            start_cluster || die "starting the cluster failed"
+
+            # Installing the driver might be disabled.
+            if install_hostpath "$images"; then
+                collect_cluster_info
+
+                if test_enabled "sanity"; then
+                    if ! run_sanity; then
+                        ret=1
+                    fi
+                fi
+
+                if test_enabled "parallel"; then
+                    # Ignore: Double quote to prevent globbing and word splitting.
+                    # shellcheck disable=SC2086
+                    if ! run_e2e parallel ${CSI_PROW_GINKO_PARALLEL} \
+                         -focus="External.Storage" \
+                         -skip="$(regex_join "${CSI_PROW_E2E_SERIAL}" "${CSI_PROW_E2E_ALPHA}" "${CSI_PROW_E2E_SKIP}")"; then
+                        warn "E2E parallel failed"
+                        ret=1
+                    fi
+                fi
+
+                if test_enabled "serial"; then
+                    if ! run_e2e serial \
+                         -focus="External.Storage.*($(regex_join "${CSI_PROW_E2E_SERIAL}"))" \
+                         -skip="$(regex_join "${CSI_PROW_E2E_ALPHA}" "${CSI_PROW_E2E_SKIP}")"; then
+                        warn "E2E serial failed"
+                        ret=1
+                    fi
+                fi
+            fi
+        fi
+
+        if (test_enabled "parallel-alpha" || test_enabled "serial-alpha") && [ "${CSI_PROW_E2E_ALPHA_GATES}" ]; then
+            # Need to (re)create the cluster.
+            start_cluster "${CSI_PROW_E2E_ALPHA_GATES}" || die "starting alpha cluster failed"
+
+            # Installing the driver might be disabled.
+            if install_hostpath "$images"; then
+                collect_cluster_info
+
+                if test_enabled "parallel-alpha"; then
+                    # Ignore: Double quote to prevent globbing and word splitting.
+                    # shellcheck disable=SC2086
+                    if ! run_e2e parallel-alpha ${CSI_PROW_GINKO_PARALLEL} \
+                         -focus="External.Storage.*($(regex_join "${CSI_PROW_E2E_ALPHA}"))" \
+                         -skip="$(regex_join "${CSI_PROW_E2E_SERIAL}" "${CSI_PROW_E2E_SKIP}")"; then
+                        warn "E2E parallel alpha failed"
+                        ret=1
+                    fi
+                fi
+
+                if test_enabled "serial-alpha"; then
+                    if ! run_e2e serial-alpha \
+                         -focus="External.Storage.*(($(regex_join "${CSI_PROW_E2E_SERIAL}")).*($(regex_join "${CSI_PROW_E2E_ALPHA}"))|($(regex_join "${CSI_PROW_E2E_ALPHA}")).*($(regex_join "${CSI_PROW_E2E_SERIAL}")))" \
+                         -skip="$(regex_join "${CSI_PROW_E2E_SKIP}")"; then
+                        warn "E2E serial alpha failed"
+                        ret=1
+                    fi
+                fi
             fi
         fi
     fi
